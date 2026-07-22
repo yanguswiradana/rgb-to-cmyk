@@ -2,6 +2,7 @@ import subprocess
 import os
 import sys
 import glob
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -17,13 +18,22 @@ def _find_gs():
         pattern = os.path.join(root, "gs*", "bin", "gswin64c.exe")
         matches = glob.glob(pattern)
         if matches:
-            return matches[-1]  # latest version
+            def _ver(path):
+                m = re.search(r'gs(\d+\.\d+\.\d+)', path)
+                return tuple(map(int, m.group(1).split('.'))) if m else (0,)
+            return max(matches, key=_ver)
     return "gswin64c"
 
 def convert_rgb_to_cmyk_windows(input_file, output_file, log_func=print):
     if not os.path.exists(input_file):
         log_func(f"Error: File '{input_file}' tidak ditemukan!")
         return False
+
+    out_dir = os.path.dirname(output_file)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
+    output_file = output_file.replace('%', '%%')
 
     gs_cmd = _find_gs()
 
@@ -37,24 +47,29 @@ def convert_rgb_to_cmyk_windows(input_file, output_file, log_func=print):
         '-dProcessColorModel=/DeviceCMYK',
         '-dEmbedAllFonts=true',
         '-dPDFSETTINGS=/prepress',
+        '-dOverrideICC=true',
+        '-dPreserveTransparency=false',
+        '-dFlattenTransparency=true',
         f'-sOutputFile={output_file}',
+        '--',
         input_file
     ]
 
     log_func(f"Memproses '{os.path.basename(input_file)}' menjadi CMYK...")
     
     try:
-        subprocess.run(gs_command, check=True)
+        subprocess.run(gs_command, check=True, capture_output=True, timeout=120)
         log_func(f"Sukses! -> '{os.path.basename(output_file)}'")
         return True
         
     except FileNotFoundError:
-        log_func(f"\n[ERROR] '{gs_cmd}' tidak ditemukan.")
-        log_func("Pastikan Ghostscript sudah terinstal.")
-        log_func("Atau edit variabel 'gs_cmd' dengan path lengkap instalasi Ghostscript.")
+        log_func(f"\n[ERROR] Ghostscript tidak ditemukan.")
+        log_func(f"Sudah dicoba: '{gs_cmd}'")
+        log_func("Pastikan Ghostscript terinstal di C:\\Program Files\\gs\\")
     except subprocess.CalledProcessError as e:
         log_func("\n[ERROR] Gagal melakukan konversi.")
-        err = e.stderr.decode(errors='replace') if e.stderr else "(no output)"
+        enc = sys.getfilesystemencoding()
+        err = e.stderr.decode(enc, errors='replace') if e.stderr else "(no output)"
         log_func(f"Detail: {err}")
     
     return False
@@ -154,10 +169,14 @@ class CmykConverterGUI:
         self.log_text.delete("1.0", "end")
         self.log_text.configure(state="disabled")
         
-        ok = convert_rgb_to_cmyk_windows(inp, out, log_func=self._log)
+        import threading
+        def task():
+            ok = convert_rgb_to_cmyk_windows(inp, out, log_func=self._log)
+            if ok:
+                self.root.after(0, lambda: messagebox.showinfo("Selesai", f"Konversi berhasil!\n{out}"))
         
-        if ok:
-            messagebox.showinfo("Selesai", f"Konversi berhasil!\n{out}")
+        t = threading.Thread(target=task, daemon=True)
+        t.start()
     
     def run(self):
         self.root.mainloop()
